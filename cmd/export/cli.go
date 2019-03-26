@@ -20,7 +20,7 @@ func NewClient() *client {
 type options struct {
 	DBPath       string `validate:"nonzero"`
 	OutPath      string
-	TargetTables string `validate:"nonzero"`
+	TargetTables string
 	Compress     bool
 }
 
@@ -33,7 +33,7 @@ func (c *client) Run(args []string) error {
 	flags.BoolVar(&opt.Compress, "z", false, "zip compress")
 	flags.StringVar(&opt.TargetTables, "tables", "", "target tables separated comma")
 	flags.Usage = func() {
-		fmt.Println("usage: export -db projects/gcloud_project_id>/instances/<instance_id>/databases/<database_id> -tables A,B,C -o export.zip")
+		fmt.Println("usage: export -db projects/<gcloud_project_id>/instances/<instance_id>/databases/<database_id> -tables A,B,C -o export.zip")
 		os.Exit(0)
 	}
 
@@ -71,7 +71,7 @@ func (c *client) Run(args []string) error {
 
 	targets := tables[:0]
 	for _, table := range tables {
-		if strings.Contains(opt.TargetTables, table.Name) {
+		if strings.Contains(opt.TargetTables, table.Name) || opt.TargetTables == "" {
 			targets = append(targets, table)
 		}
 	}

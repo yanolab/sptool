@@ -84,7 +84,6 @@ func (c *client) Run(args []string) error {
 
 			scanner := bufio.NewScanner(f)
 			v := table.New()
-			ms := make([]*spanner.Mutation, 0)
 			for scanner.Scan() {
 				err := json.Unmarshal(scanner.Bytes(), v)
 				if err != nil {
@@ -93,14 +92,13 @@ func (c *client) Run(args []string) error {
 				}
 				vals := table.Vals(v)
 				m := spanner.InsertOrUpdate(table.Name, table.Columns(), vals)
-				ms = append(ms, m)
+				if err := cli.Save(ctx, []*spanner.Mutation{m}); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+				}
 			}
 			if err := scanner.Err(); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return
-			}
-			if err := cli.Save(ctx, ms); err != nil {
-				fmt.Fprintln(os.Stderr, err)
 			}
 		}()
 	}
