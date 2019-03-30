@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +25,32 @@ func NewClient() *client {
 type options struct {
 	DBPath    string `validate:"nonzero"`
 	OverWrite bool
+}
+
+func findTable(tables []*sptool.Table, name string) *sptool.Table {
+	for _, v := range tables {
+		if v.Name == name {
+			return v
+		}
+	}
+	return nil
+}
+
+func importTo(ctx context.Context, table *sptool.Table, f io.Reader, cli *sptool.Client) error {
+	defer cli.Flush(ctx)
+	scanner := bufio.NewScanner(f)
+	v := table.New()
+	for scanner.Scan() {
+		if err := json.Unmarshal(scanner.Bytes(), v); err != nil {
+			return err
+		}
+		vals := table.Vals(v)
+		m := spanner.InsertOrUpdate(table.Name, table.Columns(), vals)
+		if err := cli.Save(ctx, []*spanner.Mutation{m}); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 func (c *client) Run(args []string) error {
@@ -58,47 +84,27 @@ func (c *client) Run(args []string) error {
 		panic(err)
 	}
 
-	fis, err := ioutil.ReadDir("out")
-	for _, fi := range fis {
-		fi := fi
+	for _, fname := range flags.Args() {
+		f, err := os.Open(fname)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "can not open: %s, err:%v", fname, err)
+			continue
+		}
 		func() {
-			f, err := os.Open(filepath.Join("out", fi.Name()))
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return
-			}
 			defer f.Close()
 
-			var table *sptool.Table
 			name := strings.TrimSuffix(filepath.Base(f.Name()), filepath.Ext(f.Name()))
-			for _, v := range tables {
-				if v.Name == name {
-					table = v
-					break
-				}
-			}
+			table := findTable(tables, name)
 			if table == nil {
 				fmt.Fprintf(os.Stderr, "no matched table: %s\n", name)
 				return
 			}
 
-			scanner := bufio.NewScanner(f)
-			v := table.New()
-			for scanner.Scan() {
-				err := json.Unmarshal(scanner.Bytes(), v)
-				if err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					continue
-				}
-				vals := table.Vals(v)
-				m := spanner.InsertOrUpdate(table.Name, table.Columns(), vals)
-				if err := cli.Save(ctx, []*spanner.Mutation{m}); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-				}
-			}
-			if err := scanner.Err(); err != nil {
+			fmt.Printf("importing %s ... ", table.Name)
+			defer fmt.Println("done")
+
+			if err := importTo(ctx, table, f, cli); err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				return
 			}
 		}()
 	}

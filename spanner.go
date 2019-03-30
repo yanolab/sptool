@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"cloud.google.com/go/spanner"
 	database "cloud.google.com/go/spanner/admin/database/apiv1"
@@ -15,15 +16,34 @@ import (
 	databasepb "google.golang.org/genproto/googleapis/spanner/admin/database/v1"
 )
 
+const (
+	MaxBuffer = 1000
+)
+
 type Client struct {
 	db     string
 	admin  *database.DatabaseAdminClient
 	client *spanner.Client
+	ms     []*spanner.Mutation
 }
 
-func (c Client) Close() error {
+func (c *Client) Close() error {
+	c.Flush(context.Background())
 	c.client.Close()
 	return c.admin.Close()
+}
+
+func (c *Client) Flush(ctx context.Context) error {
+	if len(c.ms) == 0 {
+		return nil
+	}
+	_, err := c.client.Apply(ctx, c.ms)
+	if err == nil {
+		c.ms = c.ms[:0]
+	} else {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	return err
 }
 
 func NewClient(ctx context.Context, db string) (*Client, error) {
@@ -37,7 +57,12 @@ func NewClient(ctx context.Context, db string) (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{db: db, admin: adminClient, client: dataClient}, nil
+	return &Client{
+		db:     db,
+		admin:  adminClient,
+		client: dataClient,
+		ms:     make([]*spanner.Mutation, 0),
+	}, nil
 }
 
 func (c *Client) GetDatabaseDDL(ctx context.Context) ([]string, error) {
@@ -58,7 +83,10 @@ func (c *Client) GetTables(ctx context.Context) ([]*Table, error) {
 
 	tables := make([]*Table, 0)
 	for _, v := range ddl {
-		b := bytes.NewBufferString(v + ";")
+		if !strings.HasSuffix(v, ";") {
+			v = v + ";"
+		}
+		b := bytes.NewBufferString(v)
 		ddstmts, err := parser.Parse(b)
 		if err != nil {
 			return nil, err
@@ -72,9 +100,45 @@ func (c *Client) GetTables(ctx context.Context) ([]*Table, error) {
 	return tables, nil
 }
 
-func (c *Client) Save(ctx context.Context, ms []*spanner.Mutation) error {
-	_, err := c.client.Apply(ctx, ms)
-	return err
+type option struct {
+	ForceFlush bool
+}
+
+type SaveOption func(*option)
+
+func ForceFlush(b bool) SaveOption {
+	return func(o *option) {
+		o.ForceFlush = b
+	}
+}
+
+func (c *Client) Save(ctx context.Context, ms []*spanner.Mutation, opts ...SaveOption) error {
+	var o option
+	for _, f := range opts {
+		f(&o)
+	}
+
+	if len(c.ms)+len(ms) <= MaxBuffer {
+		c.ms = append(c.ms, ms...)
+		if o.ForceFlush || len(c.ms) == MaxBuffer {
+			return c.Flush(ctx)
+		}
+		return nil
+	}
+
+	for len(ms) > 0 {
+		idx := MaxBuffer - len(c.ms)
+		c.ms = append(c.ms, ms[:idx]...)
+		if len(c.ms) < MaxBuffer && !o.ForceFlush {
+			return nil
+		}
+		if err := c.Flush(ctx); err != nil {
+			return err
+		}
+		ms = ms[idx:]
+	}
+
+	return nil
 }
 
 func (c *Client) DumpTo(ctx context.Context, table *Table, w io.Writer) error {

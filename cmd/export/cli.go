@@ -33,7 +33,7 @@ func (c *client) Run(args []string) error {
 	flags.BoolVar(&opt.Compress, "z", false, "zip compress")
 	flags.StringVar(&opt.TargetTables, "tables", "", "target tables separated comma")
 	flags.Usage = func() {
-		fmt.Println("usage: export -db projects/<gcloud_project_id>/instances/<instance_id>/databases/<database_id> -tables A,B,C -o export.zip")
+		fmt.Println("usage: export -db projects/<gcloud_project_id>/instances/<instance_id>/databases/<database_id> [-tables A,B,C] [-o out]")
 		os.Exit(0)
 	}
 
@@ -43,6 +43,14 @@ func (c *client) Run(args []string) error {
 
 	if err := validator.Validate(opt); err != nil {
 		return err
+	}
+
+	if !opt.Compress {
+		if _, err := os.Stat(opt.OutPath); os.IsNotExist(err) {
+			if err := os.MkdirAll(opt.OutPath, 0755); err != nil {
+				return err
+			}
+		}
 	}
 
 	ctx := context.Background()
@@ -77,6 +85,8 @@ func (c *client) Run(args []string) error {
 	}
 
 	dump := func(table *sptool.Table) {
+		fmt.Printf("exporting %s ... ", table.Name)
+		defer fmt.Println("done")
 		w, c, err := creator.Create(fmt.Sprintf("%s.json", table.Name))
 		if err != nil {
 			fmt.Printf("failed to create entry: %s", err)
@@ -85,7 +95,7 @@ func (c *client) Run(args []string) error {
 		defer c.Close()
 
 		if err := cli.DumpTo(ctx, table, w); err != nil {
-			fmt.Printf("failed to dump table %s: %s", table.New(), err)
+			fmt.Printf("failed to dump table %s: %s", table.Name, err)
 		}
 	}
 
